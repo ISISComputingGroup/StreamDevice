@@ -33,18 +33,6 @@
 #endif
 
 #include "epicsVersion.h"
-#ifdef BASE_VERSION
-#define EPICS_3_13
-#endif
-
-#ifdef EPICS_3_13
-#include <semLib.h>
-#include <wdLib.h>
-#include <taskLib.h>
-
-extern "C" {
-#endif
-
 #define epicsAlarmGLOBAL
 #include "alarm.h"
 #undef epicsAlarmGLOBAL
@@ -55,14 +43,6 @@ extern "C" {
 #include "devLib.h"
 #include "callback.h"
 #include "initHooks.h"
-
-#ifdef EPICS_3_13
-static char* epicsStrDup(const char *s) { char* c = (char*)malloc(strlen(s)+1); strcpy(c, s); return c; }
-extern DBBASE *pdbbase;
-} // extern "C"
-
-#else // !EPICS_3_13
-
 #include "epicsTimer.h"
 #include "epicsMutex.h"
 #include "epicsEvent.h"
@@ -71,6 +51,7 @@ extern DBBASE *pdbbase;
 #include "epicsString.h"
 #include "registryFunction.h"
 #include "iocsh.h"
+#include "epicsExit.h"
 #include "epicsExport.h"
 
 #if !defined(VERSION_INT) && EPICS_MODIFICATION < 9
@@ -79,8 +60,6 @@ extern DBBASE *pdbbase;
 // Move the declaration below to iocsh.h and rebuild base.
 extern "C" epicsShareFunc int epicsShareAPI iocshCmd(const char *command);
 #endif
-
-#endif // !EPICS_3_13
 
 #include "StreamCore.h"
 #include "StreamError.h"
@@ -101,26 +80,16 @@ long streamReload(const char* recordname);
 long streamReportRecord(const char* recordname);
 }
 
-class Stream : protected StreamCore
-#ifndef EPICS_3_13
-    , epicsTimerNotify
-#endif
+class Stream : protected StreamCore, epicsTimerNotify
 {
     dbCommon* record;
     const struct link *ioLink;
     streamIoFunction readData;
     streamIoFunction writeData;
-#ifdef EPICS_3_13
-    WDOG_ID timer;
-    CALLBACK timeoutCallback;
-    SEM_ID mutex;
-    SEM_ID initDone;
-#else
     epicsTimerQueueActive* timerQueue;
     epicsTimer* timer;
     epicsMutex mutex;
     epicsEvent initDone;
-#endif
     int status;
     int convert;
     ssize_t currentValueLength;
@@ -128,13 +97,8 @@ class Stream : protected StreamCore
     CALLBACK commandCallback;
     CALLBACK processCallback;
 
-
-#ifdef EPICS_3_13
-    static void expire(CALLBACK *pcallback);
-#else
 // epicsTimerNotify method
     expireStatus expire(const epicsTime&);
-#endif
 
 // StreamCore methods
     void inputHook(const void* input, size_t size);
@@ -222,11 +186,7 @@ long streamReload(const char* recordname)
         stream = static_cast<Stream*>(stream->next))
     {
         if (recordname && recordname[0] &&
-#ifdef EPICS_3_13
-            strcmp(stream->name(), recordname) == 0)
-#else
             !epicsStrGlobMatch(stream->name(), recordname))
-#endif
             continue;
         // This cancels any running protocol and reloads
         // the protocol file
@@ -259,7 +219,6 @@ long streamSetLogfile(const char* filename)
     return OK;
 }
 
-#ifndef EPICS_3_13
 static const iocshArg streamReloadArg0 =
     { "recordname", iocshArgString };
 static const iocshArg * const streamReloadArgs[] =
@@ -312,9 +271,6 @@ extern "C" {
 epicsExportRegistrar(streamRegistrar);
 }
 
-
-#endif // !EPICS_3_13
-
 // driver support ////////////////////////////////////////////////////////
 
 struct drvet stream = {
@@ -326,30 +282,11 @@ extern "C" {
 epicsExportAddress(drvet, stream);
 }
 
-#ifdef EPICS_3_13
-void streamEpicsPrintTimestamp(char* buffer, size_t size)
-{
-    char* c;
-    TS_STAMP tm;
-    tsLocalTime (&tm);
-    tsStampToText(&tm, TS_TEXT_MMDDYY, buffer);
-    c = strchr(buffer,'.');
-    if (c) {
-        c[4] = 0;
-    }
-}
-
-static const char* epicsThreadGetNameSelf()
-{
-    return taskName(0);
-}
-#else // !EPICS_3_13
 void streamEpicsPrintTimestamp(char* buffer, size_t size)
 {
     epicsTime tm = epicsTime::getCurrent();
     tm.strftime(buffer, size, "%Y/%m/%d %H:%M:%S.%06f");
 }
-#endif // !EPICS_3_13
 
 long Stream::
 report(int interest)
@@ -419,11 +356,7 @@ long streamReportRecord(const char* recordname)
         stream = static_cast<Stream*>(stream->next))
     {
         if (!recordname ||
-#ifdef EPICS_3_13
-            strcmp(stream->name(), recordname) == 0)
-#else
             epicsStrGlobMatch(stream->name(), recordname))
-#endif
         {
             printf("%s: %s\n", stream->name(),
                 stream->ioLink->value.instio.string);
@@ -444,6 +377,12 @@ static const char* epicsThreadGetNameSelfWrapper(void)
 }
 #define epicsThreadGetNameSelf epicsThreadGetNameSelfWrapper
 #endif
+
+static int terminating = 0;
+static void streamExitHook(void*)
+{
+    terminating = 1;
+}
 
 long Stream::
 drvInit()
@@ -476,6 +415,7 @@ drvInit()
     StreamPrintTimestampFunction = streamEpicsPrintTimestamp;
     StreamGetThreadNameFunction = epicsThreadGetNameSelf;
     initHookRegister(initHook);
+    epicsAtExit(streamExitHook, NULL);
 
     return OK;
 }
@@ -752,15 +692,10 @@ Stream::
         record->dpvt = NULL;
         debug("~Stream(%s): dpvt cleared\n", name());
     }
-#ifdef EPICS_3_13
-    wdDelete(timer);
-    debug("~Stream(%s): watchdog destroyed\n", name());
-#else
     timer->destroy();
     debug("~Stream(%s): timer destroyed\n", name());
     timerQueue->release();
     debug("~Stream(%s): timer queue released\n", name());
-#endif
     releaseMutex();
 }
 
@@ -775,34 +710,34 @@ initRecord(char* linkstring /* modifiable copy */)
 
     debug("Stream::initRecord %s: parse link string \"%s\"\n", name(), linkstring);
 
-    while (isspace(*linkstring)) linkstring++;
+    while (isspace((unsigned char)*linkstring)) linkstring++;
     filename = linkstring;
-    while (*linkstring && !isspace(*linkstring)) linkstring++;
+    while (*linkstring && !isspace((unsigned char)*linkstring)) linkstring++;
     if (*linkstring) *linkstring++ = 0;
 
-    while (isspace(*linkstring)) linkstring++;
+    while (isspace((unsigned char)*linkstring)) linkstring++;
     protocol = linkstring;
-    while (*linkstring && !isspace(*linkstring) && *linkstring != '(') linkstring++;
-    while (isspace(*linkstring)) linkstring++;
+    while (*linkstring && !isspace((unsigned char)*linkstring) && *linkstring != '(') linkstring++;
+    while (isspace((unsigned char)*linkstring)) linkstring++;
     if (*linkstring == '(') {
         int brackets = 0;
         while(*++linkstring) {
             if (*linkstring == '(') brackets++;
             else if (*linkstring == ')') brackets--;
             else if (*linkstring == '\\' && !*++linkstring) break;
-            else if (isspace(*linkstring) && brackets < 0) break;
+            else if (isspace((unsigned char)*linkstring) && brackets < 0) break;
         }
     }
     else if (*linkstring) linkstring--;
     if (*linkstring) *linkstring++ = 0;
 
-    while (isspace(*linkstring)) linkstring++;
+    while (isspace((unsigned char)*linkstring)) linkstring++;
     busname = linkstring;
-    while (*linkstring && !isspace(*linkstring)) linkstring++;
+    while (*linkstring && !isspace((unsigned char)*linkstring)) linkstring++;
     if (*linkstring) *linkstring++ = 0;
 
     if (linkstring) addr = strtol(linkstring, &linkstring, 0);
-    while (isspace(*linkstring)) linkstring++;
+    while (isspace((unsigned char)*linkstring)) linkstring++;
     busparam = linkstring;
 
     debug("Stream::initRecord %s: filename=\"%s\" protocol=\"%s\" bus=\"%s\" addr=%ld params=\"%s\"\n",
@@ -881,11 +816,7 @@ initRecord(char* linkstring /* modifiable copy */)
     }
     debug("Stream::initRecord %s: waiting for initDone\n",
         name());
-#ifdef EPICS_3_13
-    semTake(initDone, WAIT_FOREVER);
-#else
     initDone.wait();
-#endif
     debug("Stream::initRecord %s: initDone\n", name());
 
     // init run has set status and convert
@@ -1016,20 +947,12 @@ scan(format_t *format, void* value, size_t maxStringSize)
 
 // epicsTimerNotify virtual method ///////////////////////////////////////
 
-#ifdef EPICS_3_13
-void Stream::
-expire(CALLBACK *pcallback)
-{
-    static_cast<Stream*>(pcallback->user)->timerCallback();
-}
-#else
 epicsTimerNotify::expireStatus Stream::
 expire(const epicsTime&)
 {
     timerCallback();
     return noRestart;
 }
-#endif
 
 // StreamCore virtual methods ////////////////////////////////////////////
 
@@ -1102,11 +1025,7 @@ protocolFinishHook(ProtocolResult result)
     if ((flags & (InitRun|Aborted)) == InitRun && record->proc != 2)
     {
         debug("Stream::protocolFinishHook %s: signalling init done\n", name());
-#ifdef EPICS_3_13
-        semGive(initDone);
-#else
         initDone.signal();
-#endif
         return;
     }
 
@@ -1116,7 +1035,7 @@ protocolFinishHook(ProtocolResult result)
         flags |= AcceptInput;
     }
 
-    if (record->pact || record->scan == SCAN_IO_EVENT)
+    if ((record->pact || record->scan == SCAN_IO_EVENT) && !terminating)
     {
         // process record in callback thread to break possible recursion
         callbackSetPriority(priority(), &processCallback);
@@ -1149,14 +1068,7 @@ startTimer(unsigned long timeout)
 {
     debug("Stream::startTimer(stream=%s, timeout=%lu) = %f seconds\n",
         name(), timeout, timeout * 0.001);
-#ifdef EPICS_3_13
-    callbackSetPriority(priority(), &timeoutCallback);
-    wdStart(timer, (timeout+1)*sysClkRateGet()/1000-1,
-        reinterpret_cast<FUNCPTR>(callbackRequest),
-        reinterpret_cast<int>(&timeoutCallback));
-#else
     timer->start(*this, timeout * 0.001);
-#endif
 }
 
 bool Stream::
@@ -1593,20 +1505,11 @@ matchValue(const StreamFormat& format, const void* fieldaddress)
     return true;
 }
 
-#ifdef EPICS_3_13
-// Pass command to vxWorks shell
-extern "C" int execute(const char *cmd);
-#endif
-
 void Stream::
 executeCommand()
 {
     int status;
-#ifdef EPICS_3_13
-    status = ::execute(outputLine());
-#else
     status = iocshCmd(outputLine());
-#endif
     execCallback(status == OK ? StreamIoSuccess : StreamIoFault);
 }
 
@@ -1621,19 +1524,11 @@ execute()
 void Stream::
 lockMutex()
 {
-#ifdef EPICS_3_13
-    semTake(mutex, WAIT_FOREVER);
-#else
     mutex.lock();
-#endif
 }
 
 void Stream::
 releaseMutex()
 {
-#ifdef EPICS_3_13
-    semGive(mutex);
-#else
     mutex.unlock();
-#endif
 }

@@ -68,7 +68,7 @@ extern "C" {
     static int mystrncasecmp(const char *s1, const char *s2, size_t n)
     {
         int r=0;
-        while (n && (r = toupper(*s1)-toupper(*s2)) == 0) { n--; s1++; s2++; };
+        while (n && (r = toupper((unsigned char)*s1)-toupper((unsigned char)*s2)) == 0) { n--; s1++; s2++; };
         return r;
     }
 }
@@ -77,6 +77,8 @@ extern "C" {
 
 #include "StreamFormatConverter.h"
 #include "StreamError.h"
+
+#define Z PRINTF_SIZE_T_PREFIX
 
 typedef uint32_t (*checksumFunc)(const uint8_t* data, size_t len,  uint32_t init);
 
@@ -518,7 +520,7 @@ static uint32_t adler32(const uint8_t* data, size_t len, uint32_t init)
 static uint32_t hexsum(const uint8_t* data, size_t len, uint32_t sum)
 {
     // Add all hex digits, ignore all other bytes.
-    uint32_t d;
+    unsigned char d;
     while (len--)
     {
         d = toupper(*data++);
@@ -588,7 +590,7 @@ static uint32_t lrc(const uint8_t* data, size_t len, uint32_t sum)
 // Longitudinal Redundancy Check using ASCII representation of numbers, 2-by-2
 static uint32_t hexlrc(const uint8_t* data, size_t len, uint32_t sum)
 {
-    uint32_t d;
+    unsigned char d;
     uint32_t final_digit = 0;
 
     while (len--)
@@ -623,6 +625,16 @@ static uint32_t hexlrc(const uint8_t* data, size_t len, uint32_t sum)
     sum = ((sum ^ 0xFF) + 1) & 0xFF;
 
     return sum;
+}
+
+// Checksum used by Spellman High Voltage Supplies MPS
+static uint32_t hv_mps(const uint8_t* data, size_t len, uint32_t sum)
+{
+    while (len--)
+    {
+        sum += *data++;
+    }
+    return (~sum & 0x7F) | 0x40;
 }
 
 static uint32_t julich(const uint8_t* data, size_t len, uint32_t sum)
@@ -739,21 +751,22 @@ static checksum checksumMap[] =
     {"bitsum8", bitsum,           0x00,       0x00,       1}, // 0x21
     {"bitsum16",bitsum,           0x0000,     0x0000,     2}, // 0x0021
     {"bitsum32",bitsum,           0x00000000, 0x00000000, 4}, // 0x00000021
+    {"hv_mps",  hv_mps,           0xFF,       0x00,       1}, // 0x63
     {"julich",  julich,           0x00,       0x00,       2}, // 0x2D
-    {"skf_modbus",  skf_modbus,   0x00,       0x00,       2}, // 0x374B
+    {"skf_modbus",  skf_modbus,   0x00,       0x00,       2} // 0x374B
 };
 
 static uint32_t mask[5] = {0, 0xFF, 0xFFFF, 0xFFFFFF, 0xFFFFFFFF};
 
 class ChecksumConverter : public StreamFormatConverter
 {
-    int parse (const StreamFormat&, StreamBuffer&, const char*&, bool);
+    int parse (const StreamFormat&, StreamBuffer&, const char*&, bool scanFormat);
     bool printPseudo(const StreamFormat&, StreamBuffer&);
     ssize_t scanPseudo(const StreamFormat&, StreamBuffer&, size_t& cursor);
 };
 
 int ChecksumConverter::
-parse(const StreamFormat&, StreamBuffer& info, const char*& source, bool)
+parse(const StreamFormat&, StreamBuffer& info, const char*& source, bool scanFormat)
 {
     const char* p = strchr(source, '>');
     if (!p)
@@ -807,7 +820,7 @@ parse(const StreamFormat&, StreamBuffer& info, const char*& source, bool)
             info.append(&xorout, sizeof(xorout));
             info.append(fnum);
             source = p+1;
-            return pseudo_format;
+            return scanFormat ? needs_original_format : pseudo_format;
         }
     }
 
@@ -912,7 +925,7 @@ scanPseudo(const StreamFormat& format, StreamBuffer& input, size_t& cursor)
         else length = 0;
     }
 
-    debug("ChecksumConverter %s: input to check: \"%s\n",
+    debug("ChecksumConverter %s: input to check: \"%s\"\n",
         checksumMap[fnum].name, input.expand(start,length)());
 
     uint8_t nDigits =
@@ -924,8 +937,8 @@ scanPseudo(const StreamFormat& format, StreamBuffer& input, size_t& cursor)
 
     if ((ssize_t)( input.length() - cursor ) < expectedLength)
     {
-        debug("ChecksumConverter %s: Input '%s' too short for checksum\n",
-            checksumMap[fnum].name, input.expand(cursor)());
+        debug("ChecksumConverter %s: Input '%s' too short (%" Z "u-%" Z "u<%" Z "u) for checksum\n",
+            checksumMap[fnum].name, input.expand(cursor)(), input.length(), cursor, expectedLength);
         return -1;
     }
 

@@ -57,7 +57,7 @@ static long readData(dbCommon *record, format_t *format)
         case DBF_STRING:
         {
             if ((streamScanfN(record, format,
-                sco->sval, sizeof(sco->val)) == ERROR)) return ERROR;
+                sco->sval, sizeof(sco->sval)) == ERROR)) return ERROR;
             return OK;
         }
     }
@@ -104,11 +104,11 @@ struct {
     DEVSUPFUN write;
 } devscalcoutStream = {
     5,
-    streamReport,
-    streamInit,
-    initRecord,
-    streamGetIointInfo,
-    streamWrite,
+    (DEVSUPFUN) streamReport,
+    (DEVSUPFUN) streamInit,
+    (DEVSUPFUN) initRecord,
+    (DEVSUPFUN) streamGetIointInfo,
+    (DEVSUPFUN) streamWrite,
 };
 
 epicsExportAddress(dset,devscalcoutStream);

@@ -54,9 +54,7 @@ static long readData(dbCommon *record, format_t *format)
             if (ao->linr == menuConvertNO_CONVERSION) {
                 ; /*do nothing*/
             } else if ((ao->linr == menuConvertLINEAR)
-#ifndef EPICS_3_13
                     || (ao->linr == menuConvertSLOPE)
-#endif
                     ) {
                 val = val * ao->eslo + ao->eoff;
             } else {
@@ -158,11 +156,11 @@ struct {
     DEVSUPFUN special_linconv;
 } devaoStream = {
     6,
-    streamReport,
-    streamInit,
-    initRecord,
-    streamGetIointInfo,
-    streamWrite,
+    (DEVSUPFUN) streamReport,
+    (DEVSUPFUN) streamInit,
+    (DEVSUPFUN) initRecord,
+    (DEVSUPFUN) streamGetIointInfo,
+    (DEVSUPFUN) streamWrite,
     NULL
 };
 

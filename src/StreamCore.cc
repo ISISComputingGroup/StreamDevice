@@ -604,6 +604,7 @@ evalOut()
     // flush all unread input
     unparsedInput = false;
     inputBuffer.clear();
+    inputLine.clear();
     if (!formatOutput())
     {
         finishProtocol(FormatError);
@@ -1012,6 +1013,7 @@ readCallback(StreamIoStatus status,
             finishProtocol(Fault);
             return 0;
     }
+    inputHook(input, size);
     inputBuffer.append(input, size);
     debug("StreamCore::readCallback(%s) inputBuffer=\"%s\", size %" Z "u\n",
         name(), inputBuffer.expand()(), inputBuffer.length());

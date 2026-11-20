@@ -56,19 +56,15 @@ class StreamDebugClass
     const char* file;
     int line;
 public:
-    StreamDebugClass(const char* file, int line) :
+    StreamDebugClass(const char* file = NULL, int line = 0) :
         file(file), line(line) {}
     int print(const char* fmt, ...)
         __attribute__((__format__(__printf__,2,3)));
 };
 
-inline StreamDebugClass
-StreamDebugObject(const char* file, int line)
-{ return StreamDebugClass(file, line); }
-
 #define error StreamError
-#define debug (!streamDebug)?0:StreamDebugObject(__FILE__,__LINE__).print
-#define debug2 (streamDebug<2)?0:StreamDebugObject(__FILE__,__LINE__).print
+#define debug (!streamDebug)?0:StreamDebugClass(__FILE__,__LINE__).print
+#define debug2 (streamDebug<2)?0:StreamDebugClass(__FILE__,__LINE__).print
 
 /*
  * ANSI escape sequences for terminal output

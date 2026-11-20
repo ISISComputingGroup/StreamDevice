@@ -98,6 +98,15 @@ static uint32_t xor8(const uint8_t* data, size_t len, uint32_t sum)
     return sum;
 }
 
+// for ISO 1745 protocol used by M905 pressure transducer
+// it is a bit like leybold checksum in that it adds 32
+// if value is less than 32
+static uint32_t xor8p(const uint8_t* data, size_t len, uint32_t sum)
+{
+    sum = xor8(data, len, sum);
+    return sum < 32 ? sum + 32 : sum;
+}
+
 static uint32_t xor7(const uint8_t* data, size_t len, uint32_t sum)
 {
     return xor8(data, len, sum) & 0x7F;
@@ -616,6 +625,70 @@ static uint32_t hexlrc(const uint8_t* data, size_t len, uint32_t sum)
     return sum;
 }
 
+static uint32_t julich(const uint8_t* data, size_t len, uint32_t sum)
+{
+	int original_len = len;
+	int zeroes_or_hashes = 0;
+	char res[3]; /* two bytes of hex = 2 characters, plus NULL terminator */
+
+    while (len--)
+    {
+		if(*data == '#') { zeroes_or_hashes++;  sum += 0x23;}
+		if(*data == '0') { zeroes_or_hashes++;  sum += 0x30;}
+		if(*data == '1') sum += 0x31;
+		if(*data == '2') sum += 0x32;
+		if(*data == '3') sum += 0x33;
+		if(*data == '4') sum += 0x34;
+		if(*data == '5') sum += 0x35;
+		if(*data == '6') sum += 0x36;
+		if(*data == '7') sum += 0x37;
+		if(*data == '8') sum += 0x38;
+		if(*data == '9') sum += 0x39;
+		if(*data == 'A') sum += 0x41;
+		if(*data == 'B') sum += 0x42;
+		if(*data == 'C') sum += 0x43;
+		if(*data == 'D') sum += 0x44;
+		if(*data == 'E') sum += 0x45;
+		if(*data == 'F') sum += 0x46;
+		// Annoyingly the MERLIN fermi also has 'G' and 'H' as "hex" characters...
+		if(*data == 'G') sum += 0x47;
+		if(*data == 'H') sum += 0x48;
+
+		data++;
+    }
+
+	if(original_len == zeroes_or_hashes)
+	{
+		sum = 0;
+	}
+
+	// Only care about least significant 2 nibbles (1 nibble = 4 bits = 1 hex character)
+	int sum_modulo_256 = sum % 256;
+
+	sprintf(&res[0], "%02X", sum_modulo_256);
+	return res[1] + res[0]*256;
+}
+
+/**
+ *  Checksum function for the SKF MB350PC chopper.
+ *
+ *  Code is taken directly from appendix A of the manual, modified very slightly to make it work in stream device.
+ */
+static uint32_t skf_modbus(const uint8_t* data, size_t len, uint32_t sum)
+{
+    int i; /* Count through bitshifts */
+    uint16_t CRC_16 = 0xa001;
+    uint16_t crc = 0xffff; /* Initalize crc to 0xffff for modbus */
+    while (len--) {
+        crc ^= *data++; 
+        i = 8;
+        do {
+            crc = (uint16_t)((crc & 1) ? crc >> 1 ^ CRC_16 : crc >> 1);
+        } while (--i);
+    }
+    return crc; 
+}
+
 struct checksum
 {
     const char* name;
@@ -640,6 +713,7 @@ static checksum checksumMap[] =
     {"xor",     xor8,             0x00,       0x00,       1}, // 0x31
     {"xor8",    xor8,             0x00,       0x00,       1}, // 0x31
     {"xor8ff",  xor8,             0x00,       0xFF,       1}, // 0xCE
+    {"xor8p",   xor8p,            0x00,       0x00,       1}, // 0x31
     {"xor7",    xor7,             0x00,       0x00,       1}, // 0x31
     {"crc8",    crc_0x07,         0x00,       0x00,       1}, // 0xF4
     {"ccitt8",  crc_0x31,         0x00,       0x00,       1}, // 0xA1
@@ -665,6 +739,8 @@ static checksum checksumMap[] =
     {"bitsum8", bitsum,           0x00,       0x00,       1}, // 0x21
     {"bitsum16",bitsum,           0x0000,     0x0000,     2}, // 0x0021
     {"bitsum32",bitsum,           0x00000000, 0x00000000, 4}, // 0x00000021
+    {"julich",  julich,           0x00,       0x00,       2}, // 0x2D
+    {"skf_modbus",  skf_modbus,   0x00,       0x00,       2}, // 0x374B
 };
 
 static uint32_t mask[5] = {0, 0xFF, 0xFFFF, 0xFFFFFF, 0xFFFFFFFF};

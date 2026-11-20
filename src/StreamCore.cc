@@ -512,6 +512,7 @@ finishProtocol(ProtocolResult status)
                     debug("reparsing input \"%s\"\n",
                         inputLine.expand()());
                     commandIndex = handler + 1;
+                    previousMismatch = StreamBuffer();
                     if (matchInput())
                     {
                         evalCommand();
@@ -844,7 +845,7 @@ lockCallback(StreamIoStatus status)
         case StreamIoSuccess:
             break;
         case StreamIoTimeout:
-            debug("%s: Cannot lock device within %ld ms, device seems to be busy\n",
+            error("%s: Cannot lock device within %ld ms, device seems to be busy\n",
                 name(), lockTimeout);
             flags &= ~BusOwner;
             finishProtocol(LockTimeout);
@@ -1115,10 +1116,12 @@ readCallback(StreamIoStatus status,
         }
         else
         {
-            if (checkShouldPrint(ReadTimeout)) {
-                error("%s: Timeout after reading %" Z "d byte%s \"%s%s\"\n",
-                    name(), end, end==1 ? "" : "s", end > 20 ? "..." : "",
-                    inputBuffer.expand(-20)());
+			if (!inputBuffer.startswith(previousMismatch())) {
+                if (checkShouldPrint(ReadTimeout)) {
+                    error("%s: Timeout after reading %" Z "d byte%s \"%s%s\"\n",
+                        name(), end, end==1 ? "" : "s", end > 20 ? "..." : "",
+                        inputBuffer.expand(-20)());
+                }
             }
         }
     }
@@ -1138,8 +1141,11 @@ readCallback(StreamIoStatus status,
     {
         unparsedInput = false;
     }
+
     if (!matches)
     {
+		previousMismatch = inputLine;
+
         if (status == StreamIoTimeout)
         {
             // we have not forgotten the timeout
@@ -1159,6 +1165,14 @@ readCallback(StreamIoStatus status,
         finishProtocol(ScanError);
         return 0;
     }
+
+	if (previousMismatch && !(flags & AsyncMode))
+	{
+		error("%s: Match passed again\n", name());
+	}
+
+	previousMismatch = StreamBuffer();
+
     if (status == StreamIoTimeout)
     {
         // we have not forgotten the timeout
@@ -1175,10 +1189,12 @@ readCallback(StreamIoStatus status,
 bool StreamCore::
 matchInput()
 {
-    /* Don't write messages about matching errors if either in asynchronous
-       mode (then we just wait for new matching input) or if @mismatch handler
-       is installed and starts with 'in' (then we reparse the input).
+	/* Don't write messages about matching errors if:
+	   In asynchronous mode (then we just wait for new matching input) 
+	   @mismatch handler is installed and starts with 'in' (then we reparse the input).
+	   We have previously mismatched the same output (to limit repeating errors)
     */
+    bool printErrors = (!(flags & AsyncMode) && onMismatch[0] != in && !inputLine.startswith(previousMismatch()));
     char command;
     const char* fieldName = NULL;
     StreamBuffer formatstring;
@@ -1255,7 +1271,7 @@ normal_format:
                         }
                         else
                         {
-                            if (!(flags & AsyncMode) && onMismatch[0] != in)
+                            if (printErrors)
                             {
                                 error("%s: Input \"%s%s\" does not match format \"%%%s\"\n",
                                     name(), inputLine.expand(consumedInput, 20)(),
@@ -1287,7 +1303,7 @@ normal_format:
                             outputLine.length())(), outputLine.expand()());
                     if (inputLine.length() - consumedInput < outputLine.length())
                     {
-                        if (!(flags & AsyncMode) && onMismatch[0] != in)
+                        if (printErrors)
                         {
                             error("%s: Input \"%s%s\" too short."
                                   " No match for format \"%%%s\" (\"%s\")\n",
@@ -1301,7 +1317,7 @@ normal_format:
                     }
                     if (!outputLine.startswith(inputLine(consumedInput),outputLine.length()))
                     {
-                        if (!(flags & AsyncMode) && onMismatch[0] != in)
+                        if (printErrors)
                         {
                             error("%s: Input \"%s%s\" does not match format \"%%%s\" (\"%s\")\n",
                                 name(), inputLine.expand(consumedInput, 20)(),
@@ -1317,7 +1333,7 @@ normal_format:
                 flags &= ~Separator;
                 if (!matchValue(fmt, fieldAddress ? fieldAddress() : NULL))
                 {
-                    if (!(flags & AsyncMode) && onMismatch[0] != in)
+                    if (printErrors)
                     {
                         if (flags & ScanTried)
                             error("%s: Input \"%s%s\" does not match format \"%%%s\"\n",
@@ -1350,7 +1366,7 @@ normal_format:
                 {
                     int i = 0;
                     while (commandIndex[i] >= ' ') i++;
-                    if (!(flags & AsyncMode) && onMismatch[0] != in)
+                    if (printErrors)
                     {
                         error("%s: Input \"%s%s\" too short.\n",
                             name(),
@@ -1363,7 +1379,7 @@ normal_format:
                 }
                 if (command != inputLine[consumedInput])
                 {
-                    if (!(flags & AsyncMode) && onMismatch[0] != in)
+                    if (printErrors)
                     {
                         int i = 0;
                         while (commandIndex[i] >= ' ') i++;
@@ -1395,7 +1411,7 @@ normal_format:
     size_t surplus = inputLine.length()-consumedInput;
     if (surplus > 0 && !(flags & IgnoreExtraInput))
     {
-        if (!(flags & AsyncMode) && onMismatch[0] != in)
+        if (printErrors)
         {
             error("%s: %" Z "d byte%s surplus input \"%s%s\"\n",
                 name(), surplus, surplus==1 ? "" : "s",

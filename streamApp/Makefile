@@ -76,6 +76,10 @@ SHRLIB_DEPLIB_DIRS += $(PCRE_LIB)
 endif
 endif
 
+ifdef ONCRPC
+PROD_LIBS_WIN32 += oncrpc
+endif
+
 PROD_LIBS += $(EPICS_BASE_IOC_LIBS)
 
 # Some linux systems moved RPC related symbols to libtirpc

@@ -1,10 +1,12 @@
-O.*
+O.*/
 *~
-bin
-lib
-dbd
-include
+/bin/
+/lib/
+/dbd/
+/include/
+/db/
 *.pdf
 *.*log
+.project
 StreamVersion.h
 *.local

@@ -79,6 +79,8 @@ FORMATS += Binary
 FORMATS += Checksum
 FORMATS += MantissaExponent
 FORMATS += Timestamp
+FORMATS += Smdp
+FORMATS += Length
 
 # Want Perl regular expression matching?
 # If PCRE is installed at the same location for all
